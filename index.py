@@ -1,55 +1,71 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import confusion_matrix
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_curve, roc_auc_score, confusion_matrix, ConfusionMatrixDisplay, classification_report, precision_recall_curve
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, LabelEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
 
-## Explorando e Preparando os Dados
+churn_data = pd.read_csv('CSV/WA_Fn-UseC_-Telco-Customer-Churn.csv')
 
-churn_data = pd.read_csv("CSV/WA_Fn-UseC_-Telco-Customer-Churn.csv")
+# Identificar e remover colunas irrelevantes
+irrelevant_cols = ['customerID']
+churn_data = churn_data.drop(columns=irrelevant_cols)
 
-# Visualizar as primeiras linhas do conjunto de dados
-print(churn_data.head())
+# Identificar e remover colunas duplicadas
+churn_data = churn_data.loc[:, ~churn_data.columns.duplicated()]
 
-# Obter informações sobre as características e variáveis do conjunto de dados
-print(churn_data.info())
-
-# Estatísticas descritivas das variáveis numéricas
-print(churn_data.describe())
-
-# Verificar se há valores ausentes
-print(churn_data.isnull().sum())
-
-## Desenvolvendo o modelo de regressão
-
+# Dividir o conjunto de dados em variáveis independentes (X) e variável dependente (y)
 X = churn_data.drop(columns=['Churn'])
 y = churn_data['Churn']
 
-# Dividir os dados em conjuntos de treinamento e teste
+# Dividir os dados em conjuntos de treinamento e teste 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
 # Definir colunas categóricas e numéricas
 categorical_cols = X.select_dtypes(include=['object']).columns
 numeric_cols = X.select_dtypes(include=['number']).columns
 
+# Pipeline para pré-processamento
+numeric_transformer = Pipeline(steps=[
+    ('imputer', SimpleImputer(strategy='median')),  # Tratar valores ausentes com a mediana
+    ('scaler', StandardScaler())  # Padronizar variáveis numéricas
+])
+
+categorical_transformer = Pipeline(steps=[
+    ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),  # Tratar valores ausentes com a constante 'missing'
+    ('onehot', OneHotEncoder(handle_unknown='ignore'))  # Codificar variáveis categóricas
+])
+
 preprocessor = ColumnTransformer(
     transformers=[
-        ('num', StandardScaler(), numeric_cols),
-        ('cat', OneHotEncoder(handle_unknown='ignore'), categorical_cols)
+        ('num', numeric_transformer, numeric_cols),
+        ('cat', categorical_transformer, categorical_cols)
     ])
 
 # Pipeline completo
 pipeline = Pipeline(steps=[
     ('preprocessor', preprocessor),
-    ('classifier', LogisticRegression(max_iter=1000))  # Aumentando o max_iter
+    ('classifier', LogisticRegression(max_iter=1000)) 
 ])
+
+# Validação cruzada
+cv_scores = cross_val_score(pipeline, X_train, y_train, cv=5, scoring='accuracy')
+print(f'Acurácia média da validação cruzada: {cv_scores.mean():.2f}')
+print(f'Desvio padrão da acurácia da validação cruzada: {cv_scores.std():.2f}')
+
+# Grid Search para otimização de hiperparâmetros
+param_grid = {
+    'classifier__C': [0.1, 1, 10, 100],
+    'classifier__solver': ['liblinear', 'saga']
+}
+grid_search = GridSearchCV(pipeline, param_grid, cv=5, scoring='accuracy')
+grid_search.fit(X_train, y_train)
+print(f'Melhores parâmetros: {grid_search.best_params_}')
+pipeline = grid_search.best_estimator_
 
 # Treinar o modelo no conjunto de treinamento
 pipeline.fit(X_train, y_train)
@@ -57,52 +73,87 @@ pipeline.fit(X_train, y_train)
 # Fazer previsões no conjunto de teste
 y_pred = pipeline.predict(X_test)
 
-# Avaliar o desempenho do modelo
-accuracy = accuracy_score(y_test, y_pred)
-precision = precision_score(y_test, y_pred, pos_label='Yes')  # Especificando 'Yes' como rótulo positivo
-recall = recall_score(y_test, y_pred, pos_label='Yes')  # Especificando 'Yes' como rótulo positivo
-f1 = f1_score(y_test, y_pred, pos_label='Yes')  # Especificando 'Yes' como rótulo positivo
+# Codificar os rótulos verdadeiros e as previsões
+label_encoder = LabelEncoder()
+y_test_encoded = label_encoder.fit_transform(y_test)
+y_pred_encoded = label_encoder.transform(y_pred)
+
+# Avaliar o desempenho do modelo com os rótulos codificados
+accuracy = accuracy_score(y_test_encoded, y_pred_encoded)
+precision = precision_score(y_test_encoded, y_pred_encoded, pos_label=1) 
+recall = recall_score(y_test_encoded, y_pred_encoded, pos_label=1) 
+f1 = f1_score(y_test_encoded, y_pred_encoded, pos_label=1) 
 
 print("Acurácia:", accuracy)
 print("Precisão:", precision)
 print("Recall:", recall)
 print("F1-score:", f1)
 
-## Interpretando e analisando os resultados
+# Relatório de Classificação
+print("\nRelatório de Classificação:\n", classification_report(y_test, y_pred))
 
-# Obter os coeficientes do modelo
-coeficients = pipeline.named_steps['classifier'].coef_[0]
-
-numeric_features = list(numeric_cols)
-categorical_features = pipeline.named_steps['preprocessor'].named_transformers_['cat'] \
-                            .get_feature_names_out(input_features=categorical_cols)
-feature_names = numeric_features + list(categorical_features)
-
-# Obter os índices ordenados dos coeficientes
-sorted_indices = np.argsort(coeficients)
-
-# Ordenar os coeficientes e os nomes das variáveis de acordo com os índices
-sorted_coeficients = coeficients[sorted_indices]
-sorted_feature_names = np.array(feature_names)[sorted_indices]
-
-plt.figure(figsize=(10, 6))
-plt.barh(sorted_feature_names, sorted_coeficients)
-plt.xlabel('Coeficiente')
-plt.title('Coeficientes do Modelo de Regressão Logística')
-plt.grid(True)
-plt.gca().axes.get_yaxis().set_visible(False)  # Remover marcação do eixo y
-plt.show()
-
-
-# Matriz de confusão
-
-# Calcular a matriz de confusão
-conf_matrix = confusion_matrix(y_test, y_pred)
+# Curva ROC e AUC
+y_prob = pipeline.predict_proba(X_test)[:, 1]
+fpr, tpr, thresholds = roc_curve(y_test_encoded, y_prob)
+roc_auc = roc_auc_score(y_test_encoded, y_prob)
 
 plt.figure(figsize=(8, 6))
-sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', cbar=False)
-plt.xlabel('Previsão')
-plt.ylabel('Verdadeiro')
+plt.plot(fpr, tpr, label=f'AUC = {roc_auc:.2f}')
+plt.plot([0, 1], [0, 1], 'k--')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Curva ROC')
+plt.legend(loc='lower right')
+plt.grid(True)
+plt.show()
+
+# Matriz de Confusão
+conf_matrix = confusion_matrix(y_test, y_pred, labels=label_encoder.classes_)
+disp = ConfusionMatrixDisplay(confusion_matrix=conf_matrix, display_labels=label_encoder.classes_)
+disp.plot(cmap='Blues')
 plt.title('Matriz de Confusão')
 plt.show()
 
+# Curva de Precisão-Recall
+precision_vals, recall_vals, _ = precision_recall_curve(y_test_encoded, y_prob)
+plt.figure(figsize=(8, 6))
+plt.plot(recall_vals, precision_vals, label='Curva de Precisão-Recall')
+plt.xlabel('Recall')
+plt.ylabel('Precisão')
+plt.title('Curva de Precisão-Recall')
+plt.legend(loc='lower left')
+plt.grid(True)
+plt.show()
+
+# Análise de Resíduos
+y_prob_train = pipeline.predict_proba(X_train)[:, 1]
+y_train_encoded = label_encoder.transform(y_train)  
+residuals = y_train_encoded - y_prob_train
+
+plt.figure(figsize=(10, 6))
+plt.hist(residuals, bins=50)
+plt.xlabel('Resíduos Deviance')
+plt.ylabel('Frequência')
+plt.title('Histograma dos Resíduos')
+plt.grid(True)
+plt.show()
+
+# Importância das Variáveis (coeficientes)
+model = pipeline.named_steps['classifier']
+coefs = model.coef_[0]
+
+cat_features = pipeline.named_steps['preprocessor'].named_transformers_['cat'].get_feature_names_out(categorical_cols)
+features = np.concatenate([numeric_cols, cat_features])
+
+coef_df = pd.DataFrame({'Feature': features, 'Coefficient': coefs})
+coef_df = coef_df.sort_values(by='Coefficient', ascending=False)
+
+# Importâncias das variáveis numéricas
+numeric_coef_df = coef_df[coef_df['Feature'].isin(numeric_cols)]
+plt.figure(figsize=(10, 6))
+plt.barh(numeric_coef_df['Feature'], numeric_coef_df['Coefficient'], color='lightblue')
+plt.xlabel('Importância')
+plt.ylabel('Feature')
+plt.title('Importância das Variáveis Numéricas')
+plt.grid(True)
+plt.show()
